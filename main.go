@@ -31,14 +31,12 @@ func main() {
 		os.Exit(1)
 	}
 
-	licenses := make(map[string]License)
+	licenses := make(map[License][]string)
 
 	for _, filename := range args {
 		newLicenses := getLicensesForFile(filename)
 
-		for key, val := range newLicenses {
-			licenses[key] = val
-		}
+		licenses = mergeMaps(licenses, newLicenses)
 	}
 
 	prettyPrintLicenses(licenses)
@@ -46,12 +44,28 @@ func main() {
 
 func getGithubLicense(repo string) (License, error) {
 	ownerProj := repo[len("github.com/"):]
-	resp, err := http.Get(fmt.Sprintf("%s/repos/%s", githubAPIURL, ownerProj))
+
+	client := &http.Client{}
+
+	req, err := http.NewRequest("GET", fmt.Sprintf("%s/repos/%s", githubAPIURL, ownerProj), nil)
+
+	// To increase the rate limit from 60-5000 (as of the time of this comment),
+	// GitHub requires an auth token. For a mix of security and ease of use
+	// I decided to use an environment variable for the token.
+	// To generate a new token go to https://github.com/settings/tokens.
+	if authToken := os.Getenv("GITHUB_AUTH_TOKEN"); authToken != "" {
+		req.Header.Set("Authorization", "token "+authToken)
+	}
+
+	resp, err := client.Do(req)
 	if err != nil {
 		return License{}, err
 	}
 
 	defer resp.Body.Close()
+
+	// TODO: Handle error codes (e.g 400, 403, 404, 500, etc)
+
 	data, err := ioutil.ReadAll(resp.Body)
 
 	var repoResp RepoResponse
@@ -80,8 +94,8 @@ func getGithubRepos(text string) ([]string, error) {
 	return regex.FindAllString(text, -1), nil
 }
 
-func getLicensesForFile(filename string) map[string]License {
-	licenses := make(map[string]License)
+func getLicensesForFile(filename string) map[License][]string {
+	licenses := make(map[License][]string)
 
 	file, err := os.Open(filename)
 	if err != nil {
@@ -104,7 +118,7 @@ func getLicensesForFile(filename string) map[string]License {
 				fmt.Printf("Error getting license info %v", err)
 			}
 
-			licenses[license.Key] = license
+			licenses[license] = append(licenses[license], repo)
 		}
 	}
 
@@ -112,11 +126,50 @@ func getLicensesForFile(filename string) map[string]License {
 }
 
 func (license *License) print() {
-	fmt.Printf("Name: %s\n\tKey: %s\n\tURL: %s\n", license.Name, license.Key, license.URL)
+	fmt.Printf("Name: %s | Key: %s | URL: %s\n", license.Name, license.Key, license.URL)
 }
 
-func prettyPrintLicenses(licenses map[string]License) {
-	for _, license := range licenses {
+func prettyPrintLicenses(licenses map[License][]string) {
+	for license, repos := range licenses {
 		license.print()
+		printArr("Repos", repos)
+
+		fmt.Println()
 	}
+}
+
+func printArr(prompt string, arr []string) {
+	fmt.Printf("%s: ", prompt)
+	arrLen := len(arr)
+
+	if arrLen == 0 {
+		fmt.Println()
+		return
+	}
+
+	for _, a := range arr[:arrLen-1] {
+		fmt.Printf("%s, ", a)
+	}
+
+	fmt.Printf("%s\n", arr[arrLen-1])
+}
+
+func mergeMaps(map1 map[License][]string, map2 map[License][]string) map[License][]string {
+	merged := make(map[License][]string)
+
+	// copys all the values from map1 into the new map
+	for key, val := range map1 {
+		merged[key] = val
+	}
+
+	for key, val := range map2 {
+		if merged[key] == nil {
+			merged[key] = val
+			continue
+		}
+
+		merged[key] = append(merged[key], map2[key]...)
+	}
+
+	return merged
 }
